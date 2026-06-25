@@ -481,9 +481,20 @@ LssBusHardware::return_type LssBusHardware::on_deactivate(
     {
       int n;
         if(reply_pending) {
-          if(0 < (n = bus.update(state_reply.begin(), state_reply.end()))) {
+          // Drain EVERY buffered reply round, keeping only the freshest sample.
+          // bus.update() parses at most one round (state_reply.size() packets)
+          // per call and then returns. The original code called it ONCE per cycle
+          // while unconditionally firing a new request below, so any slow or
+          // partial round left bytes in the serial RX buffer that accumulated
+          // forever (a FIFO backlog): read() then returned ever-older data and
+          // joint_states lagged real motion by a growing several seconds, at any
+          // update_rate. Looping until a sub-round read (buffer empty) collapses
+          // the backlog to the latest round every cycle, while still tolerating
+          // dropped replies (we always re-request afterwards).
+          while(0 < (n = bus.update(state_reply.begin(), state_reply.end()))) {
             auto preq = state_reply.begin();
-            while(n-- > 0) {
+            int got = n;
+            while(got-- > 0) {
               // If one or more servos didn't reply then some requests
               // in our state_reply may not have been parsed, we'll just
               // catch'em the next round.
@@ -511,6 +522,10 @@ LssBusHardware::return_type LssBusHardware::on_deactivate(
               }
               preq++;
             }
+            // A short (sub-round) read means the serial buffer is now empty; a
+            // full round may have more queued behind it, so loop to drain it.
+            if(n < (int)state_reply.size())
+              break;
           }
         }
 
